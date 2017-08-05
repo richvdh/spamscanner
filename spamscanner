@@ -1,0 +1,171 @@
+#!/usr/bin/perl
+#
+# Feeds false positive and negative spam through spamassassin's learner.
+#
+# For each folder for each user, first looks for a 'spam' subfolder, and
+# if such exists, looks for mail which has appeared since the last run and
+# which does not have the spam header set. Learns any such mail as spam, then
+# flags it as deleted.
+#
+# Then looks through the main folder for new mail which does have the spam
+# header set. Learns such mail as non-spam.
+#
+# If a permission error is returned when trying to select a folder, attempts
+# to grant itself access rights on the folder and tries again. This will worl
+# fine provided the spamscanner user is configured as an admin user
+# (/etc/imapd.conf/imap_admins)
+
+use strict;
+use warnings;
+use Mail::Header ();
+use Mail::IMAPClient ();
+use Fcntl;
+use DB_File ();
+use AppConfig qw/:argcount/;
+use Socket qw/PF_INET SOCK_STREAM inet_aton sockaddr_in/;
+use IO::Socket::SSL;
+
+my $SPAM_HEADER='X-SW1V-Spam-Flag';
+
+my $config = AppConfig->new();
+
+$config->
+  define(
+	 'debug'   => { ARGCOUNT => ARGCOUNT_NONE,DEFAULT => 0 },
+	 'host'	   => { ARGCOUNT => ARGCOUNT_ONE, DEFAULT => "" },
+	 'port'    => { ARGCOUNT => ARGCOUNT_ONE, DEFAULT => 143 },
+	 'user'    => { ARGCOUNT => ARGCOUNT_ONE, DEFAULT => 'spamscanner' },
+	 'pass'    => { ARGCOUNT => ARGCOUNT_ONE, DEFAULT => '' },
+	 'crammd5' => { ARGCOUNT => ARGCOUNT_NONE,DEFAULT => 1 },
+	 'statefile'=>{ ARGCOUNT => ARGCOUNT_ONE, 
+			DEFAULT => '/var/lib/spamscanner/spamscanner.state' },
+	);
+
+$config->args();
+
+my $pass=$config->pass();
+die "password not given" unless $pass;
+
+my $sfile = $config->statefile();
+my %state;
+tie %state, 'DB_File', $sfile, O_RDWR|O_CREAT, 0666, 
+  $DB_File::DB_HASH or die "unable to open state db '$sfile': $!";
+# $state{'user.rav.spam'}=660918;
+
+my $imap = Mail::IMAPClient->new(User     => $config->user(),
+				 Password => $pass,
+				 Peek     => 1,
+                                 Debug    => $config->debug(),
+                                 Server   => $config->host(),
+                                 Port     => $config->port(),
+# SSL didn't work - message fetches seemed to time out. Very odd.
+#             Socket   => IO::Socket::SSL->new
+#             (  Proto    => 'tcp',
+#                PeerAddr => $config->host(),
+#                PeerPort => $config->port(),
+#             ),
+				) or die "Cannot connect: $@";
+
+
+
+my @folders = $imap->folders()
+  or die "error fetching folders: $!";
+
+foreach my $f (@folders) {
+    next unless $f =~ /^user\.([^.]+)(\.|$)/;
+    my $user = $1;
+    my $spam = ($f =~ /\.spam$/);
+    #print "$f\t$user\t$spam\n";
+    #print "sam '$f' spamscanner ",($spam?"lrd":"lr"),"\n";
+
+    process_mbox($f,$user,$spam);
+}
+
+exit 0;
+
+sub process_mbox {
+    my ($mbox, $user, $spamfolder)=@_;
+
+    if(!$imap->select($mbox)) {
+	warn "Couldn't select '$mbox': $@";
+	if($@ !~ /^\d+ NO /) {
+	    return;
+	}
+	# permission error; try setting the ACL and try again
+	print "Setting acl...\n";
+	if(!$imap->setacl($mbox,$config->user(),"+lr")) {
+	    warn "Couldn't set acl on '$mbox' for ".$config->user()." +lr: $@";
+	    return;
+	}
+	if(!$imap->select($mbox)) {
+	    warn "Still couldn't select '$mbox': $@";
+        }
+    }
+
+    my $uidstart = $state{$mbox} || 0;
+
+    # decide where we're going up to today
+    my $uidnext = $imap->uidnext($mbox) or die "Couldn't get status: $@";
+    # print "next: $uidnext\n";
+
+    return if $uidnext == $uidstart;
+    print "Processing ",($spamfolder?"spam":"ham"),
+      " folder $mbox, messages $uidstart->$uidnext for user $user\n";
+
+    # search for mail which has appeared since the last pass and is not spam
+    my @msg_list = $imap->search('UID', "$uidstart:".($uidnext-1),
+				 'UNDELETED',
+				 ($spamfolder?('NOT'):()),
+				 'HEADER',$SPAM_HEADER, 'YES');
+    if($@) {
+	die "Search error: $@";
+    }
+    foreach my $uid (@msg_list) {
+	print "Processing message $uid\n";
+	my $msg = $imap->message_string($uid)
+	  or die "Error fetching message: $@";
+	#next;
+	do_report(($spamfolder?'spam':'ham'),$user,$msg);
+	if($spamfolder) {
+	    $imap -> delete_message($uid)
+	      or die "Error deleting message: $@";
+	}
+
+	## XXX ought to update the state file. though it
+	## doesn't really matter if we learn things twice.
+    }
+    $state{$mbox}=$uidnext;
+}
+
+# send a message to spamd for learning
+sub do_report {
+    my ($class,$user,$msg) = @_;
+
+    # open a socket to the spamd
+    my $spamd;
+    socket $spamd, PF_INET, SOCK_STREAM, getprotobyname('tcp') 
+      or die "unable to open socket: $!";
+    my $port = getservbyname('spamd','tcp');
+    my $inet = inet_aton('127.0.0.1');
+    connect ($spamd, sockaddr_in($port,$inet)) 
+      or die "unable to connect to spamd: $!";
+    $spamd -> autoflush(1);
+
+    my ($cmd)=
+      "TELL SPAMC/1.4\r\n".
+      "Message-class: $class\r\n".
+      "Set: local\r\n".
+      "User: $user\r\n".
+      "Content-length: ".length($msg)."\r\n".
+      "\r\n".
+      $msg;
+    #print ">>>>>\n",$cmd,">>>>\n";
+    print $spamd $cmd;
+    
+
+    while(<$spamd>) {
+	print;
+    }
+
+    close $spamd or die $!;
+}
