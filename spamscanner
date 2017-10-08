@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/env python
 #
 # Feeds false positive and negative spam through spamassassin's learner.
 #
@@ -11,161 +11,200 @@
 # header set. Learns such mail as non-spam.
 #
 # If a permission error is returned when trying to select a folder, attempts
-# to grant itself access rights on the folder and tries again. This will worl
+# to grant itself access rights on the folder and tries again. This will work
 # fine provided the spamscanner user is configured as an admin user
 # (/etc/imapd.conf/imap_admins)
 
-use strict;
-use warnings;
-use Mail::Header ();
-use Mail::IMAPClient ();
-use Fcntl;
-use DB_File ();
-use AppConfig qw/:argcount/;
-use Socket qw/PF_INET SOCK_STREAM inet_aton sockaddr_in/;
-use IO::Socket::SSL;
+from __future__ import print_function
 
-my $SPAM_HEADER='X-SW1V-Spam-Flag';
-
-my $config = AppConfig->new();
-
-$config->
-  define(
-	 'debug'   => { ARGCOUNT => ARGCOUNT_NONE,DEFAULT => 0 },
-	 'host'	   => { ARGCOUNT => ARGCOUNT_ONE, DEFAULT => "" },
-	 'port'    => { ARGCOUNT => ARGCOUNT_ONE, DEFAULT => 143 },
-	 'user'    => { ARGCOUNT => ARGCOUNT_ONE, DEFAULT => 'spamscanner' },
-	 'pass'    => { ARGCOUNT => ARGCOUNT_ONE, DEFAULT => '' },
-	 'crammd5' => { ARGCOUNT => ARGCOUNT_NONE,DEFAULT => 1 },
-	 'statefile'=>{ ARGCOUNT => ARGCOUNT_ONE, 
-			DEFAULT => '/var/lib/spamscanner/spamscanner.state' },
-	);
-
-$config->args();
-
-my $pass=$config->pass();
-die "password not given" unless $pass;
-
-my $sfile = $config->statefile();
-my %state;
-tie %state, 'DB_File', $sfile, O_RDWR|O_CREAT, 0666, 
-  $DB_File::DB_HASH or die "unable to open state db '$sfile': $!";
-# $state{'user.rav.spam'}=660918;
-
-my $imap = Mail::IMAPClient->new(User     => $config->user(),
-				 Password => $pass,
-				 Peek     => 1,
-                                 Debug    => $config->debug(),
-                                 Server   => $config->host(),
-                                 Port     => $config->port(),
-# SSL didn't work - message fetches seemed to time out. Very odd.
-#             Socket   => IO::Socket::SSL->new
-#             (  Proto    => 'tcp',
-#                PeerAddr => $config->host(),
-#                PeerPort => $config->port(),
-#             ),
-				) or die "Cannot connect: $@";
+import argparse
+import imaplib
+import pickle
+import re
+import socket
+import sys
+import traceback
 
 
+class Scanner(object):
+    def __init__(self, imap, state):
+        self.imap = imap
 
-my @folders = $imap->folders()
-  or die "error fetching folders: $!";
+        # state is a map from mailbox name to the starting point for the next
+        # run (ie, one more than the last message we saw.)
+        self.state = state
 
-foreach my $f (@folders) {
-    next unless $f =~ /^user\.([^.]+)(\.|$)/;
-    my $user = $1;
-    my $spam = ($f =~ /\.spam$/);
-    #print "$f\t$user\t$spam\n";
-    #print "sam '$f' spamscanner ",($spam?"lrd":"lr"),"\n";
+        # debug level
+        self.debug = 0
 
-    process_mbox($f,$user,$spam);
-}
+        self.spam_header = ''
+        self.spamscanner_user = ''
 
-exit 0;
+    def dbg(self, level, msg):
+        if level > self.debug:
+            return
+        print (msg, file=sys.stderr)
 
-sub process_mbox {
-    my ($mbox, $user, $spamfolder)=@_;
+    def select_mbox(self, mbox):
+        """ Select the given mailbox
+        """
+        self.imap.select(mbox, readonly=True)
 
-    if(!$imap->select($mbox)) {
-	warn "Couldn't select '$mbox': $@";
-	if($@ !~ /^\d+ NO /) {
-	    return;
-	}
-	# permission error; try setting the ACL and try again
-	print "Setting acl...\n";
-	if(!$imap->setacl($mbox,$config->user(),"+lr")) {
-	    warn "Couldn't set acl on '$mbox' for ".$config->user()." +lr: $@";
-	    return;
-	}
-	if(!$imap->select($mbox)) {
-	    warn "Still couldn't select '$mbox': $@";
-        }
-    }
+        if False:
+            # permission error; try setting the ACL and try again
+            print("Setting acl on %s...", mbox)
+            self.imap.setacl(mbox, self.spamscanner_user, '+lr')
+            self.imap.select(mbox, readonly=True)
 
-    my $uidstart = $state{$mbox} || 0;
+    def process_mbox(self, mbox, user, isspam):
+        self.select_mbox(mbox)
+        uidstart = int(self.state.get(mbox, 0))
 
-    # decide where we're going up to today
-    my $uidnext = $imap->uidnext($mbox) or die "Couldn't get status: $@";
-    # print "next: $uidnext\n";
+        # decide where we're going up to today
+        uidnext_resp = self.imap.response('UIDNEXT')
+        if uidnext_resp is None:
+            raise Exception('no UIDNEXT in response from SELECT')
+        uidnext = int(uidnext_resp[1][0])
+        self.dbg(2, "range: [%i,%i)" % (uidstart, uidnext))
 
-    return if $uidnext == $uidstart;
-    print "Processing ",($spamfolder?"spam":"ham"),
-      " folder $mbox, messages $uidstart->$uidnext for user $user\n";
+        if uidnext == uidstart:
+            return
 
-    # search for mail which has appeared since the last pass and is not spam
-    my @msg_list = $imap->search('UID', "$uidstart:".($uidnext-1),
-				 'UNDELETED',
-				 ($spamfolder?('NOT'):()),
-				 'HEADER',$SPAM_HEADER, 'YES');
-    if($@) {
-	die "Search error: $@";
-    }
-    foreach my $uid (@msg_list) {
-	print "Processing message $uid\n";
-	my $msg = $imap->message_string($uid)
-	  or die "Error fetching message: $@";
-	#next;
-	do_report(($spamfolder?'spam':'ham'),$user,$msg);
-	if($spamfolder) {
-	    $imap -> delete_message($uid)
-	      or die "Error deleting message: $@";
-	}
+        # search for mail which has appeared since the last pass and whose
+        # spam header does not match its current status (indicating that the
+        # user has moved it).
+        (r, (v,)) = self.imap.uid(
+            "search", None,
+            'UID', "%i:%i" % (uidstart, uidnext-1),
+            'UNDELETED',
+            'NOT' if isspam else None,
+            'HEADER', self.spam_header, 'YES'
+        )
 
-	## XXX ought to update the state file. though it
-	## doesn't really matter if we learn things twice.
-    }
-    $state{$mbox}=$uidnext;
-}
+        if v == '':
+            return
 
-# send a message to spamd for learning
-sub do_report {
-    my ($class,$user,$msg) = @_;
+        for uid in v.split(' '):
+            self.fetch_and_report(uid, user, isspam)
 
-    # open a socket to the spamd
-    my $spamd;
-    socket $spamd, PF_INET, SOCK_STREAM, getprotobyname('tcp') 
-      or die "unable to open socket: $!";
-    my $port = getservbyname('spamd','tcp');
-    my $inet = inet_aton('127.0.0.1');
-    connect ($spamd, sockaddr_in($port,$inet)) 
-      or die "unable to connect to spamd: $!";
-    $spamd -> autoflush(1);
+        self.state[mbox]=uidnext
 
-    my ($cmd)=
-      "TELL SPAMC/1.4\r\n".
-      "Message-class: $class\r\n".
-      "Set: local\r\n".
-      "User: $user\r\n".
-      "Content-length: ".length($msg)."\r\n".
-      "\r\n".
-      $msg;
-    #print ">>>>>\n",$cmd,">>>>\n";
-    print $spamd $cmd;
-    
+    def fetch_and_report(self, uid, user, isspam):
+        """ fetch a message from the current mailbox and report it as ham/spam
+        """
+        self.dbg(2, "Processing %i" % int(uid))
 
-    while(<$spamd>) {
-	print;
-    }
+        (r, msgs) = self.imap.uid('fetch', uid, '(RFC822)')
+        msg = msgs[0][1]
+        self.do_report('spam' if isspam else 'ham', user, msg)
 
-    close $spamd or die $!;
-}
+    def do_report(self, msgclass, user, msg):
+        """ send a message to spamd for learning
+        """
+
+        # strip CRs to work around
+        # https://bz.apache.org/SpamAssassin/show_bug.cgi?id=5185#c30
+        msg = msg.replace('\r', '')
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect(('127.0.0.1', 783))
+        hdr = (
+            "TELL SPAMC/1.4\r\n"
+            "Message-class: %s\r\n"
+            "Set: local\r\n"
+            "User: %s\r\n"
+            "Content-length: %i\r\n"
+            "\r\n"
+            % (msgclass, user, len(msg)))
+
+        sock.sendall(hdr)
+        sock.sendall(msg)
+
+        while True:
+            data = sock.recv(1024)
+            if data == '':
+                break
+            self.dbg(2, "<<< %s" % data)
+        sock.close()
+
+
+def unquote(f):
+    """ strip quotes from a name
+    """
+    if f[0] != '"' or f[-1] != '"':
+        return f
+    return f[1:-1]
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('-d', '--debug', action='count')
+    parser.add_argument('-H', '--host', required=True)
+    parser.add_argument('-P', '--port', type=int, default=143)
+    parser.add_argument('-u', '--user', default='spamscanner')
+    parser.add_argument('-p', '--pass', dest='password', required=True)
+    parser.add_argument('--spam_header', default='X-SW1V-Spam-Flag')
+    parser.add_argument(
+        '--statefile', default='/var/lib/spamscanner/spamscanner.pickle',
+    )
+    parser.add_argument(
+        '--init', action='store_true',
+        help='initialise new state file.',
+    )
+    parser.add_argument(
+        '--import-bdb-state', metavar='FILE',
+        help='initialise new state from old bdb state file. Requires python 2.',
+    )
+    args = parser.parse_args()
+
+    if args.import_bdb_state:
+        import dbhash
+        state = dict(dbhash.open(args.import_bdb_state))
+    elif args.init:
+        state = {}
+    else:
+        with open(args.statefile) as f:
+            state = pickle.load(f)
+
+    imap = imaplib.IMAP4(args.host, args.port)
+    imap.debug = args.debug
+    imap.login(args.user, args.password)
+
+    scanner = Scanner(imap, state)
+    scanner.debug = args.debug
+    scanner.spam_header = args.spam_header
+    scanner.spamscanner_user = args.user
+
+    list_response_pattern = re.compile(
+        r'\((.*)\) "(.*)" (.*)',
+    )
+    (r, data) = imap.list()
+    for l in data:
+        (flags, delim, folder) = list_response_pattern.match(l).groups()
+
+        parts = unquote(folder).split(delim)
+
+        # skip non-user folders
+        if parts[0] != 'user':
+            print('skipping folder %s' % folder)
+            continue
+        user = parts[1]
+        isspam = parts[-1] == 'spam'
+        if args.debug > 0:
+            print ('processing %s folder %s for %s' % (
+                'spam' if isspam else 'ham',
+                folder, user,
+            ))
+        try:
+            scanner.process_mbox(folder, user, isspam);
+        except Exception as e:
+            print(
+                'Error processing %s:' % (folder, ),
+                file=sys.stderr,
+            )
+            traceback.print_exc(e)
+            break
+
+    with open(args.statefile, "w") as f:
+        pickle.dump(state, f)
