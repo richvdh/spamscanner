@@ -52,11 +52,18 @@ class Scanner(object):
 
         if False:
             # permission error; try setting the ACL and try again
-            print("Setting acl on %s...", mbox)
+            self.dbg(0, "Setting acl on %s..." % mbox)
             self.imap.setacl(mbox, self.spamscanner_user, '+lr')
             self.imap.select(mbox, readonly=True)
 
     def process_mbox(self, mbox, user, isspam):
+        self.dbg(
+            1, 'processing %s folder %s for %s' % (
+                'spam' if isspam else 'ham',
+                mbox, user,
+            )
+        )
+
         self.select_mbox(mbox)
         uidstart = int(self.state.get(mbox, 0))
 
@@ -187,15 +194,10 @@ if __name__ == '__main__':
 
         # skip non-user folders
         if parts[0] != 'user':
-            print('skipping folder %s' % folder)
+            dbg(1, 'skipping folder %s' % folder)
             continue
         user = parts[1]
         isspam = parts[-1] == 'spam'
-        if args.debug > 0:
-            print ('processing %s folder %s for %s' % (
-                'spam' if isspam else 'ham',
-                folder, user,
-            ))
         try:
             scanner.process_mbox(folder, user, isspam);
         except Exception as e:
