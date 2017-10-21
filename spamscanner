@@ -189,11 +189,27 @@ def unquote(f):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('-d', '--debug', action='count')
-    parser.add_argument('-H', '--host', required=True)
-    parser.add_argument('-P', '--port', type=int, default=143)
-    parser.add_argument('-u', '--user', default='spamscanner')
-    parser.add_argument('-p', '--pass', dest='password', required=True)
+    parser.add_argument(
+        '-H', '--host', required=True,
+        help='IMAP server',
+    )
+    parser.add_argument(
+        '-P', '--port', type=int, default=143,
+        help='Port to connect to. Default %(default)s',
+    )
+    parser.add_argument(
+        '-u', '--user', default='spamscanner',
+        help='IMAP username. Default %(default)s',
+    )
+    parser.add_argument(
+        '-p', '--pass', dest='password', required=True,
+        help='IMAP password',
+    )
+    parser.add_argument(
+        '-d', '--debug', action='count',
+        help='''Increase debug level. Give multiple times for more
+        verbosity''',
+    )
     parser.add_argument(
         '-n', '--not-really', action='store_true',
         help=("don't actually report as spam/ham - just show what we would "
@@ -214,14 +230,21 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--statefile', default='/var/lib/spamscanner/spamscanner.pickle',
+        metavar="FILE",
+        help='''A file where we store our state. It's not critical, but it
+        saves us feeding the same messages through spamassassin every time we
+        run, so is important for performance''',
     )
     parser.add_argument(
         '--init', action='store_true',
-        help='initialise new state file.',
+        help='''initialise new state file. This should be used the first time
+        the script is run, or if the statefile has got lost. It will mean we
+        scan the whole of each mailbox, instead of starting from where we got
+        to last time''',
     )
     parser.add_argument(
         '--import-bdb-state', metavar='FILE',
-        help='initialise new state from old bdb state file. Requires python 2.'
+        help='initialise new state from old bdb state file. Requires python 2'
     )
     args = parser.parse_args()
 
