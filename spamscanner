@@ -194,7 +194,7 @@ if __name__ == '__main__':
 
         # skip non-user folders
         if parts[0] != 'user':
-            dbg(1, 'skipping folder %s' % folder)
+            scanner.dbg(1, 'skipping folder %s' % folder)
             continue
         user = parts[1]
         isspam = parts[-1] == 'spam'
