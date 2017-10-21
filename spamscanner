@@ -26,6 +26,36 @@ import sys
 import traceback
 
 
+class ImapRequestError(Exception):
+    def __init__(self, rtype, data):
+        super(ImapRequestError, self).__init__(
+            "IMAP error: %r" % ((rtype, data),))
+
+        # one of OK or NO, normally
+        self.rtype = rtype
+
+        # list of results from the command; each entry is either a
+        # string, or a tuple. If a tuple, then the first part is the
+        # header of the response, and the second part contains the data
+        # (ie: 'literal' value).
+        self.data = data
+
+
+def check_response(response):
+    """ Check the response from an imap operation
+
+    Expects 'response' to be a (type, [data...]) result from an IMAP
+    operation.
+
+    If 'type' is not OK, throws an ImapRequestError with the result.
+
+    Otherwise, returns the [data...] list.
+    """
+    if response[0] == 'OK':
+        return response[1]
+    raise ImapRequestError(*response)
+
+
 class Scanner(object):
     def __init__(self, imap, state):
         self.imap = imap
@@ -43,18 +73,21 @@ class Scanner(object):
     def dbg(self, level, msg):
         if level > self.debug:
             return
-        print (msg, file=sys.stderr)
+        print(msg, file=sys.stderr)
 
     def select_mbox(self, mbox):
         """ Select the given mailbox
         """
-        self.imap.select(mbox, readonly=True)
+        try:
+            check_response(self.imap.select(mbox, readonly=True))
+            return
+        except ImapRequestError as e:
+            pass
 
-        if False:
-            # permission error; try setting the ACL and try again
-            self.dbg(0, "Setting acl on %s..." % mbox)
-            self.imap.setacl(mbox, self.spamscanner_user, '+lr')
-            self.imap.select(mbox, readonly=True)
+        # permission error; try setting the ACL and try again
+        self.dbg(0, "Setting acl on %s..." % mbox)
+        check_response(self.imap.setacl(mbox, self.spamscanner_user, '+lr'))
+        check_response(self.imap.select(mbox, readonly=True))
 
     def process_mbox(self, mbox, user, isspam):
         self.dbg(
@@ -80,13 +113,13 @@ class Scanner(object):
         # search for mail which has appeared since the last pass and whose
         # spam header does not match its current status (indicating that the
         # user has moved it).
-        (r, (v,)) = self.imap.uid(
+        (v,) = check_response(self.imap.uid(
             "search", None,
             'UID', "%i:%i" % (uidstart, uidnext-1),
             'UNDELETED',
             'NOT' if isspam else None,
             'HEADER', self.spam_header, 'YES'
-        )
+        ))
 
         if v == '':
             return
@@ -94,14 +127,14 @@ class Scanner(object):
         for uid in v.split(' '):
             self.fetch_and_report(uid, user, isspam)
 
-        self.state[mbox]=uidnext
+        self.state[mbox] = uidnext
 
     def fetch_and_report(self, uid, user, isspam):
         """ fetch a message from the current mailbox and report it as ham/spam
         """
         self.dbg(2, "Processing %i" % int(uid))
 
-        (r, msgs) = self.imap.uid('fetch', uid, '(RFC822)')
+        msgs = check_response(self.imap.uid('fetch', uid, '(RFC822)'))
         msg = msgs[0][1]
         self.do_report('spam' if isspam else 'ham', user, msg)
 
