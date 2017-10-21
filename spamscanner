@@ -161,7 +161,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--import-bdb-state', metavar='FILE',
-        help='initialise new state from old bdb state file. Requires python 2.',
+        help='initialise new state from old bdb state file. Requires python 2.'
     )
     args = parser.parse_args()
 
@@ -199,7 +199,7 @@ if __name__ == '__main__':
         user = parts[1]
         isspam = parts[-1] == 'spam'
         try:
-            scanner.process_mbox(folder, user, isspam);
+            scanner.process_mbox(folder, user, isspam)
         except Exception as e:
             print(
                 'Error processing %s:' % (folder, ),
