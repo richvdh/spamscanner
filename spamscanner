@@ -68,7 +68,9 @@ class Scanner(object):
         self.debug = 0
 
         self.spam_header = ''
+        self.spam_header_value = ''
         self.spamscanner_user = ''
+        self.not_really = False
 
     def dbg(self, level, msg):
         if level > self.debug:
@@ -118,25 +120,33 @@ class Scanner(object):
             'UID', "%i:%i" % (uidstart, uidnext-1),
             'UNDELETED',
             'NOT' if isspam else None,
-            'HEADER', self.spam_header, 'YES'
+            'HEADER', self.spam_header, self.spam_header_value,
         ))
 
         if v == '':
             return
 
         for uid in v.split(' '):
-            self.fetch_and_report(uid, user, isspam)
+            self.fetch_and_report(mbox, uid, user, isspam)
 
-        self.state[mbox] = uidnext
+        if not self.not_really:
+            self.state[mbox] = uidnext
 
-    def fetch_and_report(self, uid, user, isspam):
+    def fetch_and_report(self, mbox, uid, user, isspam):
         """ fetch a message from the current mailbox and report it as ham/spam
         """
-        self.dbg(2, "Processing %i" % int(uid))
+        msgclass = 'spam' if isspam else 'ham'
+        self.dbg(
+            0 if self.not_really else 1,
+            "Reporting %s.%s as %s for %s" % (
+                mbox, uid, msgclass, user),
+        )
+        if self.not_really:
+            return
 
         msgs = check_response(self.imap.uid('fetch', uid, '(RFC822)'))
         msg = msgs[0][1]
-        self.do_report('spam' if isspam else 'ham', user, msg)
+        self.do_report(msgclass, user, msg)
 
     def do_report(self, msgclass, user, msg):
         """ send a message to spamd for learning
@@ -184,7 +194,24 @@ if __name__ == '__main__':
     parser.add_argument('-P', '--port', type=int, default=143)
     parser.add_argument('-u', '--user', default='spamscanner')
     parser.add_argument('-p', '--pass', dest='password', required=True)
-    parser.add_argument('--spam_header', default='X-SW1V-Spam-Flag')
+    parser.add_argument(
+        '-n', '--not-really', action='store_true',
+        help=("don't actually report as spam/ham - just show what we would "
+              "have done"),
+    )
+    parser.add_argument(
+        '--spam-header', default='X-Spam-Flag',
+        metavar="HDR",
+        help='''The name of the email header which indicates that a mail
+        was scanned as spam at delivery time. Default:\'%(default)s\'''',
+    )
+    parser.add_argument(
+        '--spam-header-value', default='yes',
+        metavar="TEXT",
+        help='''The text to match in the --spam-header which indicates that
+        a mail was scanned as spam. This is matched case-insenstively and
+        can appear anywhere in the header. Default:\'%(default)s\'''',
+    )
     parser.add_argument(
         '--statefile', default='/var/lib/spamscanner/spamscanner.pickle',
     )
@@ -214,7 +241,9 @@ if __name__ == '__main__':
     scanner = Scanner(imap, state)
     scanner.debug = args.debug
     scanner.spam_header = args.spam_header
+    scanner.spam_header_value = args.spam_header_value
     scanner.spamscanner_user = args.user
+    scanner.not_really = args.not_really
 
     list_response_pattern = re.compile(
         r'\((.*)\) "(.*)" (.*)',
@@ -230,7 +259,7 @@ if __name__ == '__main__':
             scanner.dbg(1, 'skipping folder %s' % folder)
             continue
         user = parts[1]
-        isspam = parts[-1] == 'spam'
+        isspam = parts[-1].lower() == 'spam'
         try:
             scanner.process_mbox(folder, user, isspam)
         except Exception as e:
