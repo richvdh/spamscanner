@@ -275,9 +275,7 @@ if __name__ == '__main__':
               "have done."),
     )
     parser.add_argument(
-        '--no-delete-spam-after-report', action='store_false',
-        default=argparse.SUPPRESS,
-        dest='delete_spam_after_report',
+        '--no-delete-spam-after-report', action='store_true',
         help="""Normally messages found in the spam folder are marked as
         deleted after they are reported to spamassassin. This argument
         inhibits this behaviour.""")
@@ -343,7 +341,7 @@ if __name__ == '__main__':
     scanner.spam_header_value = args.spam_header_value
     scanner.spamscanner_user = args.user
     scanner.not_really = args.not_really
-    scanner.delete_spam_after_report = args.delete_spam_after_report
+    scanner.delete_spam_after_report = not args.no_delete_spam_after_report
     scanner.spamd_host_port = parse_hostport(args.spamd_server,
                                              default_port=783)
 
