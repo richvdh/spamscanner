@@ -89,7 +89,10 @@ class Scanner(object):
             )
         )
 
-        self.select_mbox(mbox, allow_delete=(isspam and self.delete_spam_after_report))
+        self.select_mbox(
+            mbox,
+            allow_delete=(isspam and self.delete_spam_after_report),
+        )
         uidstart = int(self.state.get(mbox, 0))
 
         # decide where we're going up to today
