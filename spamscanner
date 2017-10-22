@@ -74,6 +74,7 @@ class Scanner(object):
         self.spamscanner_user = ''
         self.not_really = False
         self.delete_spam_after_report = False
+        self.spamd_host_port = (None, None)
 
     def dbg(self, level, msg):
         if level > self.debug:
@@ -191,7 +192,7 @@ class Scanner(object):
         msg = msg.replace('\r', '')
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(('127.0.0.1', 783))
+        sock.connect(self.spamd_host_port)
         hdr = (
             "TELL SPAMC/1.4\r\n"
             "Message-class: %s\r\n"
@@ -257,6 +258,10 @@ if __name__ == '__main__':
         '-d', '--debug', action='count',
         help="""Increase debug level. Give multiple times for more
         verbosity""",
+    )
+    parser.add_argument(
+        '--spamd-server', default='localhost',
+        help="spamassassin daemon address. Default '%(default)s'",
     )
     parser.add_argument(
         '-n', '--not-really', action='store_true',
@@ -332,6 +337,8 @@ if __name__ == '__main__':
     scanner.spamscanner_user = args.user
     scanner.not_really = args.not_really
     scanner.delete_spam_after_report = args.delete_spam_after_report
+    scanner.spamd_host_port = parse_hostport(args.spamd_server,
+                                             default_port=783)
 
     list_response_pattern = re.compile(
         r'\((.*)\) "(.*)" (.*)',
