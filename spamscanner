@@ -50,6 +50,8 @@ def check_response(response):
     If 'type' is not OK, throws an ImapRequestError with the result.
 
     Otherwise, returns the [data...] list.
+
+    (imaplib checks for 'BAD' responses, but not 'NO' responses.)
     """
     if response[0] == 'OK':
         return response[1]
@@ -71,25 +73,12 @@ class Scanner(object):
         self.spam_header_value = ''
         self.spamscanner_user = ''
         self.not_really = False
+        self.delete_spam_after_report = False
 
     def dbg(self, level, msg):
         if level > self.debug:
             return
         print(msg, file=sys.stderr)
-
-    def select_mbox(self, mbox):
-        """ Select the given mailbox
-        """
-        try:
-            check_response(self.imap.select(mbox, readonly=True))
-            return
-        except ImapRequestError as e:
-            pass
-
-        # permission error; try setting the ACL and try again
-        self.dbg(0, "Setting acl on %s..." % mbox)
-        check_response(self.imap.setacl(mbox, self.spamscanner_user, '+lr'))
-        check_response(self.imap.select(mbox, readonly=True))
 
     def process_mbox(self, mbox, user, isspam):
         self.dbg(
@@ -99,7 +88,7 @@ class Scanner(object):
             )
         )
 
-        self.select_mbox(mbox)
+        self.select_mbox(mbox, allow_delete=(isspam and self.delete_spam_after_report))
         uidstart = int(self.state.get(mbox, 0))
 
         # decide where we're going up to today
@@ -147,6 +136,51 @@ class Scanner(object):
         msgs = check_response(self.imap.uid('fetch', uid, '(RFC822)'))
         msg = msgs[0][1]
         self.do_report(msgclass, user, msg)
+
+        if isspam and self.delete_spam_after_report:
+            self.delete_msg(uid)
+
+    def delete_msg(self, msguid):
+        """ Delete the given message from the current mailbox.
+        """
+        check_response(self.imap.uid('store', msguid, '+FLAGS', '(\\Deleted)'))
+
+    def select_mbox(self, mbox, allow_delete=False):
+        """ Select the given mailbox
+        """
+
+        # l: lookup (visible to LIST/SUBSCRIPGE)
+        # r: read (SELECT/STATUS)
+        # t: set deleted flag
+        rights = '+lr'
+        if allow_delete:
+            rights += 't'
+
+        self.do_or_setacl(
+            mbox, rights,
+            self.imap.select, mbox,
+            readonly=not allow_delete,
+        )
+
+    def do_or_setacl(self, mbox, rights, func, *args, **kwargs):
+        """Perform an operation, setting the ACL if it fails.
+
+        Returns the data parts of an 'OK' response.
+        """
+        try:
+            return check_response(func(*args, **kwargs))
+        except imaplib.IMAP4.readonly:
+            # flush the untagged response to shut imaplib up
+            self.imap.response('READ-ONLY')
+        except ImapRequestError as e:
+            if e.rtype != 'NO':
+                raise
+            pass
+
+        # permission error; try setting the ACL and try again
+        self.dbg(0, "Setting acl on %s %s" % (mbox, rights))
+        check_response(self.imap.setacl(mbox, self.spamscanner_user, rights))
+        return check_response(func(*args, **kwargs))
 
     def do_report(self, msgclass, user, msg):
         """ send a message to spamd for learning
@@ -216,6 +250,12 @@ if __name__ == '__main__':
               "have done"),
     )
     parser.add_argument(
+        '--no-delete-spam-after-report', action='store_false',
+        dest='delete_spam_after_report',
+        help="""Normally messages found in the spam folder are marked as
+        deleted after they are reported to spamassassin. This argument
+        inhibits this behaviour.""")
+    parser.add_argument(
         '--spam-header', default='X-Spam-Flag',
         metavar="HDR",
         help="""The name of the email header which indicates that a mail
@@ -267,6 +307,7 @@ if __name__ == '__main__':
     scanner.spam_header_value = args.spam_header_value
     scanner.spamscanner_user = args.user
     scanner.not_really = args.not_really
+    scanner.delete_spam_after_report = args.delete_spam_after_report
 
     list_response_pattern = re.compile(
         r'\((.*)\) "(.*)" (.*)',
