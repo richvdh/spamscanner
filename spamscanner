@@ -220,16 +220,30 @@ def unquote(f):
     return f[1:-1]
 
 
+def parse_hostport(s, default_port=None):
+    if s[-1] == ']':
+        # ipv6 literal (with no port)
+        return (s, default_port)
+
+    out = s.rsplit(":", 1)
+    if len(out) == 1:
+        # No port
+        port = default_port
+    else:
+        try:
+            port = int(out[1])
+        except ValueError:
+            raise ValueError("Invalid host:port '%s'" % s)
+
+    return (out[0], port)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        '-H', '--host', default='localhost',
+        '-S', '--imap-server', default='localhost',
         help="IMAP server. Default '%(default)s'",
-    )
-    parser.add_argument(
-        '-P', '--port', type=int, default=143,
-        help='Port to connect to. Default %(default)s',
     )
     parser.add_argument(
         '-u', '--user', default='spamscanner',
@@ -297,7 +311,17 @@ if __name__ == '__main__':
         with open(args.statefile) as f:
             state = pickle.load(f)
 
-    imap = imaplib.IMAP4(args.host, args.port)
+    (host, port) = parse_hostport(args.imap_server, default_port=143)
+    try:
+        imap = imaplib.IMAP4(host, port)
+    except Exception as e:
+        print(
+            "Unable to connect to imap server at %s:%d: %s" %
+            (host, port, e),
+            file=sys.stderr,
+        )
+        exit(1)
+
     imap.debug = args.debug
     imap.login(args.user, args.password)
 
