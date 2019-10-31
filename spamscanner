@@ -116,11 +116,9 @@ class Scanner(object):
             'HEADER', self.spam_header, self.spam_header_value,
         ))
 
-        if v == '':
-            return
-
-        for uid in v.split(' '):
-            self.fetch_and_report(mbox, uid, user, isspam)
+        if v != '':
+            for uid in v.split(' '):
+                self.fetch_and_report(mbox, uid, user, isspam)
 
         if not self.not_really:
             self.state[mbox] = uidnext
