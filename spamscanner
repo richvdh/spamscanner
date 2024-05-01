@@ -359,13 +359,20 @@ if __name__ == '__main__':
                 file=sys.stderr,
             )
             exit(1)
-        (flags, delim, folder) = match.groups()
+        (flaglist, delim, folder) = match.groups()
+        flags = flaglist.split(' ')
+
+        # Skip unselectable folders. These are normally parent folders that don't
+        # really exist themselves.
+        if '\\Noselect' in flags:
+            scanner.dbg(1, 'skipping \\Noselect folder %s' % folder)
+            continue
 
         parts = unquote(folder).split(delim)
 
         # skip non-user folders
         if parts[0] != 'user':
-            scanner.dbg(1, 'skipping folder %s' % folder)
+            scanner.dbg(1, 'skipping non-user folder %s' % folder)
             continue
         user = parts[1]
         isspam = parts[-1].lower() == 'spam'
