@@ -378,13 +378,13 @@ if __name__ == '__main__':
         isspam = parts[-1].lower() == 'spam'
         try:
             scanner.process_mbox(folder, user, isspam)
-        except Exception as e:
+        except Exception:
             print(
                 'Error processing %s:' % (folder, ),
                 file=sys.stderr,
             )
-            traceback.print_exc(e)
-            break
+            traceback.print_exc()
+            exit(1)
 
     with open(args.statefile, "wb") as wf:
         pickle.dump(state, wf)
