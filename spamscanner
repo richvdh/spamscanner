@@ -260,7 +260,7 @@ if __name__ == '__main__':
         help='IMAP password',
     )
     parser.add_argument(
-        '-d', '--debug', action='count',
+        '-d', '--debug', action='count', default=0,
         help="""Increase debug level. Give multiple times for more
         verbosity.""",
     )
