@@ -24,7 +24,7 @@ import re
 import socket
 import sys
 import traceback
-from typing import Tuple, Iterable
+from typing import Tuple, Iterable, TypeVar, Callable
 
 
 class ImapRequestError(Exception):
@@ -41,8 +41,9 @@ class ImapRequestError(Exception):
         # (ie: 'literal' value).
         self.data = data
 
+T=TypeVar("T")
 
-def check_response(response: Tuple[str, list[bytes]]) -> Iterable[str]:
+def check_response(response: Tuple[str, T]) -> T:
     """ Check the response from an imap operation
 
     Expects 'response' to be a (type, [data...]) result from an IMAP
@@ -55,7 +56,7 @@ def check_response(response: Tuple[str, list[bytes]]) -> Iterable[str]:
     (imaplib checks for 'BAD' responses, but not 'NO' responses.)
     """
     if response[0] == 'OK':
-        return (x.decode() for x in response[1])
+        return response[1]
     raise ImapRequestError(*response)
 
 
@@ -82,7 +83,7 @@ class Scanner(object):
             return
         print(msg, file=sys.stderr)
 
-    def process_mbox(self, mbox: str, user: str, isspam: bool):
+    def process_mbox(self, mbox: str, user: str, isspam: bool) -> None:
         self.dbg(
             1, 'processing %s folder %s for %s' % (
                 'spam' if isspam else 'ham',
@@ -116,15 +117,14 @@ class Scanner(object):
             'NOT' if isspam else None,
             'HEADER', self.spam_header, self.spam_header_value,
         ))
-
-        if v != '':
-            for uid in v.split(' '):
+        if v != b'':
+            for uid in v.decode().split(' '):
                 self.fetch_and_report(mbox, uid, user, isspam)
 
         if not self.not_really:
             self.state[mbox] = uidnext
 
-    def fetch_and_report(self, mbox, uid, user, isspam):
+    def fetch_and_report(self, mbox:str, uid: str, user: str, isspam: bool) -> None:
         """ fetch a message from the current mailbox and report it as ham/spam
         """
         msgclass = 'spam' if isspam else 'ham'
@@ -133,11 +133,13 @@ class Scanner(object):
             "Reporting %s.%s as %s for %s" % (
                 mbox, uid, msgclass, user),
         )
-        if self.not_really:
-            return
 
         msgs = check_response(self.imap.uid('fetch', uid, '(RFC822)'))
         msg = msgs[0][1]
+
+        if self.not_really:
+            return
+
         self.do_report(msgclass, user, msg)
 
         if isspam and self.delete_spam_after_report:
@@ -165,13 +167,12 @@ class Scanner(object):
             readonly=not allow_delete,
         )
 
-    def do_or_setacl(self, mbox, rights, func, *args, **kwargs):
+    def do_or_setacl(self, mbox: str, rights:str, func: Callable, *args, **kwargs) -> None:
         """Perform an operation, setting the ACL if it fails.
-
-        Returns the data parts of an 'OK' response.
         """
         try:
-            return check_response(func(*args, **kwargs))
+            check_response(func(*args, **kwargs))
+            return
         except imaplib.IMAP4.readonly:
             # flush the untagged response to shut imaplib up
             self.imap.response('READ-ONLY')
@@ -183,7 +184,7 @@ class Scanner(object):
         # permission error; try setting the ACL and try again
         self.dbg(0, "Setting acl on %s %s" % (mbox, rights))
         check_response(self.imap.setacl(mbox, self.spamscanner_user, rights))
-        return check_response(func(*args, **kwargs))
+        check_response(func(*args, **kwargs))
 
     def do_report(self, msgclass, user, msg):
         """ send a message to spamd for learning
