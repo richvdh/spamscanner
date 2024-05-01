@@ -145,12 +145,9 @@ class Scanner(object):
         msgs = check_response(self.imap.uid("fetch", uid, "(RFC822)"))
         msg = msgs[0][1]
 
-        if self.not_really:
-            return
-
         self.do_report(msgclass, user, msg)
 
-        if isspam and self.delete_spam_after_report:
+        if not self.not_really and isspam and self.delete_spam_after_report:
             self.delete_msg(uid)
 
     def delete_msg(self, msguid):
@@ -195,30 +192,34 @@ class Scanner(object):
         check_response(self.imap.setacl(mbox, self.spamscanner_user, rights))
         check_response(func(*args, **kwargs))
 
-    def do_report(self, msgclass, user, msg):
+    def do_report(self, msgclass: str, user: str, msg: bytes) -> None:
         """send a message to spamd for learning"""
 
         # strip CRs to work around
         # https://bz.apache.org/SpamAssassin/show_bug.cgi?id=5185#c30
-        msg = msg.replace("\r", "")
+        msg = msg.replace(b"\r", b"")
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect(self.spamd_host_port)
         hdr = (
-            "TELL SPAMC/1.4\r\n"
-            "Message-class: %s\r\n"
-            "Set: local\r\n"
-            "User: %s\r\n"
-            "Content-length: %i\r\n"
-            "\r\n" % (msgclass, user, len(msg))
+            b"TELL SPAMC/1.4\r\n"
+            b"Message-class: %s\r\n"
+            b"Set: local\r\n"
+            b"User: %s\r\n"
+            b"Content-length: %i\r\n"
+            b"\r\n" % (msgclass.encode(), user.encode(), len(msg))
         )
+
+        # bail out at the last possible minute
+        if self.not_really:
+            return
 
         sock.sendall(hdr)
         sock.sendall(msg)
 
         while True:
             data = sock.recv(1024)
-            if data == "":
+            if len(data) == 0:
                 break
             self.dbg(2, "<<< %s" % data)
         sock.close()
