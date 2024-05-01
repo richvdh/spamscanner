@@ -29,8 +29,7 @@ from typing import Tuple, Iterable, TypeVar, Callable
 
 class ImapRequestError(Exception):
     def __init__(self, rtype, data):
-        super(ImapRequestError, self).__init__(
-            "IMAP error: %r" % ((rtype, data),))
+        super(ImapRequestError, self).__init__("IMAP error: %r" % ((rtype, data),))
 
         # one of OK or NO, normally
         self.rtype = rtype
@@ -41,10 +40,12 @@ class ImapRequestError(Exception):
         # (ie: 'literal' value).
         self.data = data
 
-T=TypeVar("T")
+
+T = TypeVar("T")
+
 
 def check_response(response: Tuple[str, T]) -> T:
-    """ Check the response from an imap operation
+    """Check the response from an imap operation
 
     Expects 'response' to be a (type, [data...]) result from an IMAP
     operation.
@@ -55,7 +56,7 @@ def check_response(response: Tuple[str, T]) -> T:
 
     (imaplib checks for 'BAD' responses, but not 'NO' responses.)
     """
-    if response[0] == 'OK':
+    if response[0] == "OK":
         return response[1]
     raise ImapRequestError(*response)
 
@@ -71,9 +72,9 @@ class Scanner(object):
         # debug level
         self.debug = 0
 
-        self.spam_header = ''
-        self.spam_header_value = ''
-        self.spamscanner_user = ''
+        self.spam_header = ""
+        self.spam_header_value = ""
+        self.spamscanner_user = ""
         self.not_really = False
         self.delete_spam_after_report = False
         self.spamd_host_port = (None, None)
@@ -85,10 +86,13 @@ class Scanner(object):
 
     def process_mbox(self, mbox: str, user: str, isspam: bool) -> None:
         self.dbg(
-            1, 'processing %s folder %s for %s' % (
-                'spam' if isspam else 'ham',
-                mbox, user,
-            )
+            1,
+            "processing %s folder %s for %s"
+            % (
+                "spam" if isspam else "ham",
+                mbox,
+                user,
+            ),
         )
 
         self.select_mbox(
@@ -98,9 +102,9 @@ class Scanner(object):
         uidstart = int(self.state.get(mbox, 0))
 
         # decide where we're going up to today
-        uidnext_resp = self.imap.response('UIDNEXT')
+        uidnext_resp = self.imap.response("UIDNEXT")
         if uidnext_resp is None:
-            raise Exception('no UIDNEXT in response from SELECT')
+            raise Exception("no UIDNEXT in response from SELECT")
         uidnext = int(uidnext_resp[1][0])
         self.dbg(2, "range: [%i,%i)" % (uidstart, uidnext))
 
@@ -110,31 +114,35 @@ class Scanner(object):
         # search for mail which has appeared since the last pass and whose
         # spam header does not match its current status (indicating that the
         # user has moved it).
-        (v,) = check_response(self.imap.uid(
-            "search", None,
-            'UID', "%i:%i" % (uidstart, uidnext-1),
-            'UNDELETED',
-            'NOT' if isspam else None,
-            'HEADER', self.spam_header, self.spam_header_value,
-        ))
-        if v != b'':
-            for uid in v.decode().split(' '):
+        (v,) = check_response(
+            self.imap.uid(
+                "search",
+                None,
+                "UID",
+                "%i:%i" % (uidstart, uidnext - 1),
+                "UNDELETED",
+                "NOT" if isspam else None,
+                "HEADER",
+                self.spam_header,
+                self.spam_header_value,
+            )
+        )
+        if v != b"":
+            for uid in v.decode().split(" "):
                 self.fetch_and_report(mbox, uid, user, isspam)
 
         if not self.not_really:
             self.state[mbox] = uidnext
 
-    def fetch_and_report(self, mbox:str, uid: str, user: str, isspam: bool) -> None:
-        """ fetch a message from the current mailbox and report it as ham/spam
-        """
-        msgclass = 'spam' if isspam else 'ham'
+    def fetch_and_report(self, mbox: str, uid: str, user: str, isspam: bool) -> None:
+        """fetch a message from the current mailbox and report it as ham/spam"""
+        msgclass = "spam" if isspam else "ham"
         self.dbg(
             0 if self.not_really else 1,
-            "Reporting %s.%s as %s for %s" % (
-                mbox, uid, msgclass, user),
+            "Reporting %s.%s as %s for %s" % (mbox, uid, msgclass, user),
         )
 
-        msgs = check_response(self.imap.uid('fetch', uid, '(RFC822)'))
+        msgs = check_response(self.imap.uid("fetch", uid, "(RFC822)"))
         msg = msgs[0][1]
 
         if self.not_really:
@@ -146,38 +154,39 @@ class Scanner(object):
             self.delete_msg(uid)
 
     def delete_msg(self, msguid):
-        """ Delete the given message from the current mailbox.
-        """
-        check_response(self.imap.uid('store', msguid, '+FLAGS', '(\\Deleted)'))
+        """Delete the given message from the current mailbox."""
+        check_response(self.imap.uid("store", msguid, "+FLAGS", "(\\Deleted)"))
 
     def select_mbox(self, mbox, allow_delete=False):
-        """ Select the given mailbox
-        """
+        """Select the given mailbox"""
 
         # l: lookup (visible to LIST/SUBSCRIPGE)
         # r: read (SELECT/STATUS)
         # t: set deleted flag
-        rights = '+lr'
+        rights = "+lr"
         if allow_delete:
-            rights += 't'
+            rights += "t"
 
         self.do_or_setacl(
-            mbox, rights,
-            self.imap.select, mbox,
+            mbox,
+            rights,
+            self.imap.select,
+            mbox,
             readonly=not allow_delete,
         )
 
-    def do_or_setacl(self, mbox: str, rights:str, func: Callable, *args, **kwargs) -> None:
-        """Perform an operation, setting the ACL if it fails.
-        """
+    def do_or_setacl(
+        self, mbox: str, rights: str, func: Callable, *args, **kwargs
+    ) -> None:
+        """Perform an operation, setting the ACL if it fails."""
         try:
             check_response(func(*args, **kwargs))
             return
         except imaplib.IMAP4.readonly:
             # flush the untagged response to shut imaplib up
-            self.imap.response('READ-ONLY')
+            self.imap.response("READ-ONLY")
         except ImapRequestError as e:
-            if e.rtype != 'NO':
+            if e.rtype != "NO":
                 raise
             pass
 
@@ -187,12 +196,11 @@ class Scanner(object):
         check_response(func(*args, **kwargs))
 
     def do_report(self, msgclass, user, msg):
-        """ send a message to spamd for learning
-        """
+        """send a message to spamd for learning"""
 
         # strip CRs to work around
         # https://bz.apache.org/SpamAssassin/show_bug.cgi?id=5185#c30
-        msg = msg.replace('\r', '')
+        msg = msg.replace("\r", "")
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect(self.spamd_host_port)
@@ -202,30 +210,29 @@ class Scanner(object):
             "Set: local\r\n"
             "User: %s\r\n"
             "Content-length: %i\r\n"
-            "\r\n"
-            % (msgclass, user, len(msg)))
+            "\r\n" % (msgclass, user, len(msg))
+        )
 
         sock.sendall(hdr)
         sock.sendall(msg)
 
         while True:
             data = sock.recv(1024)
-            if data == '':
+            if data == "":
                 break
             self.dbg(2, "<<< %s" % data)
         sock.close()
 
 
 def unquote(f):
-    """ strip quotes from a name
-    """
+    """strip quotes from a name"""
     if f[0] != '"' or f[-1] != '"':
         return f
     return f[1:-1]
 
 
 def parse_hostport(s, default_port=None):
-    if s[-1] == ']':
+    if s[-1] == "]":
         # ipv6 literal (with no port)
         return (s, default_port)
 
@@ -242,78 +249,100 @@ def parse_hostport(s, default_port=None):
     return (out[0], port)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
     parser.add_argument(
-        '-S', '--imap-server', default='localhost',
+        "-S",
+        "--imap-server",
+        default="localhost",
         help="IMAP server.",
     )
     parser.add_argument(
-        '-u', '--user', default='spamscanner',
+        "-u",
+        "--user",
+        default="spamscanner",
         help="IMAP username.",
     )
     parser.add_argument(
-        '-p', '--pass', dest='password', required=True,
+        "-p",
+        "--pass",
+        dest="password",
+        required=True,
         default=argparse.SUPPRESS,
-        help='IMAP password',
+        help="IMAP password",
     )
     parser.add_argument(
-        '-d', '--debug', action='count', default=0,
+        "-d",
+        "--debug",
+        action="count",
+        default=0,
         help="""Increase debug level. Give multiple times for more
         verbosity.""",
     )
     parser.add_argument(
-        '--spamd-server', default='localhost',
+        "--spamd-server",
+        default="localhost",
         help="spamassassin daemon address.",
     )
     parser.add_argument(
-        '-n', '--not-really', action='store_true',
-        help=("don't actually report as spam/ham - just show what we would "
-              "have done."),
+        "-n",
+        "--not-really",
+        action="store_true",
+        help=(
+            "don't actually report as spam/ham - just show what we would " "have done."
+        ),
     )
     parser.add_argument(
-        '--no-delete-spam-after-report', action='store_true',
+        "--no-delete-spam-after-report",
+        action="store_true",
         help="""Normally messages found in the spam folder are marked as
         deleted after they are reported to spamassassin. This argument
-        inhibits this behaviour.""")
+        inhibits this behaviour.""",
+    )
     parser.add_argument(
-        '--spam-header', default='X-Spam-Flag',
+        "--spam-header",
+        default="X-Spam-Flag",
         metavar="HDR",
         help="""The name of the email header which indicates that a mail
         was scanned as spam at delivery time.""",
     )
     parser.add_argument(
-        '--spam-header-value', default='yes',
+        "--spam-header-value",
+        default="yes",
         metavar="TEXT",
         help="""The text to match in the --spam-header which indicates that
         a mail was scanned as spam. This is matched case-insenstively and
         can appear anywhere in the header.""",
     )
     parser.add_argument(
-        '--statefile', default='/var/lib/spamscanner/spamscanner.pickle',
+        "--statefile",
+        default="/var/lib/spamscanner/spamscanner.pickle",
         metavar="FILE",
         help="""A file where we store our state. It's not critical, but it
         saves us feeding the same messages through spamassassin every time we
         run, so is important for performance.""",
     )
     parser.add_argument(
-        '--init', action='store_true',
+        "--init",
+        action="store_true",
         help="""initialise new state file. This should be used the first time
         the script is run, or if the statefile has got lost. It will mean we
         scan the whole of each mailbox, instead of starting from where we got
         to last time.""",
     )
     parser.add_argument(
-        '--import-bdb-state', metavar='FILE',
-        help='initialise new state from old bdb state file. Requires python 2.'
+        "--import-bdb-state",
+        metavar="FILE",
+        help="initialise new state from old bdb state file. Requires python 2.",
     )
     args = parser.parse_args()
 
     if args.import_bdb_state:
         import dbhash  # type: ignore
+
         state = dict(dbhash.open(args.import_bdb_state))
     elif args.init:
         state = {}
@@ -326,8 +355,7 @@ if __name__ == '__main__':
         imap = imaplib.IMAP4(host, port)
     except Exception as e:
         print(
-            "Unable to connect to imap server at %s:%d: %s" %
-            (host, port, e),
+            "Unable to connect to imap server at %s:%d: %s" % (host, port, e),
             file=sys.stderr,
         )
         exit(1)
@@ -342,8 +370,7 @@ if __name__ == '__main__':
     scanner.spamscanner_user = args.user
     scanner.not_really = args.not_really
     scanner.delete_spam_after_report = not args.no_delete_spam_after_report
-    scanner.spamd_host_port = parse_hostport(args.spamd_server,
-                                             default_port=783)
+    scanner.spamd_host_port = parse_hostport(args.spamd_server, default_port=783)
 
     list_response_pattern = re.compile(
         r'\((.*)\) "(.*)" (.*)',
@@ -352,36 +379,36 @@ if __name__ == '__main__':
     for l_bytes in data:
         assert isinstance(l_bytes, bytes)
         l = l_bytes.decode()
-        scanner.dbg(3, 'parsing LIST line %s' % l)
+        scanner.dbg(3, "parsing LIST line %s" % l)
         match = list_response_pattern.match(l)
         if not match:
             print(
-                'Unable to parse IMAP LIST response line %s' % (l,),
+                "Unable to parse IMAP LIST response line %s" % (l,),
                 file=sys.stderr,
             )
             exit(1)
         (flaglist, delim, folder) = match.groups()
-        flags = flaglist.split(' ')
+        flags = flaglist.split(" ")
 
         # Skip unselectable folders. These are normally parent folders that don't
         # really exist themselves.
-        if '\\Noselect' in flags:
-            scanner.dbg(1, 'skipping \\Noselect folder %s' % folder)
+        if "\\Noselect" in flags:
+            scanner.dbg(1, "skipping \\Noselect folder %s" % folder)
             continue
 
         parts = unquote(folder).split(delim)
 
         # skip non-user folders
-        if parts[0] != 'user':
-            scanner.dbg(1, 'skipping non-user folder %s' % folder)
+        if parts[0] != "user":
+            scanner.dbg(1, "skipping non-user folder %s" % folder)
             continue
         user = parts[1]
-        isspam = parts[-1].lower() == 'spam'
+        isspam = parts[-1].lower() == "spam"
         try:
             scanner.process_mbox(folder, user, isspam)
         except Exception:
             print(
-                'Error processing %s:' % (folder, ),
+                "Error processing %s:" % (folder,),
                 file=sys.stderr,
             )
             traceback.print_exc()
