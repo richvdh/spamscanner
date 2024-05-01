@@ -24,6 +24,7 @@ import re
 import socket
 import sys
 import traceback
+from typing import Tuple, Iterable
 
 
 class ImapRequestError(Exception):
@@ -41,7 +42,7 @@ class ImapRequestError(Exception):
         self.data = data
 
 
-def check_response(response):
+def check_response(response: Tuple[str, list[bytes]]) -> Iterable[str]:
     """ Check the response from an imap operation
 
     Expects 'response' to be a (type, [data...]) result from an IMAP
@@ -54,7 +55,7 @@ def check_response(response):
     (imaplib checks for 'BAD' responses, but not 'NO' responses.)
     """
     if response[0] == 'OK':
-        return response[1]
+        return (x.decode() for x in response[1])
     raise ImapRequestError(*response)
 
 
@@ -76,12 +77,12 @@ class Scanner(object):
         self.delete_spam_after_report = False
         self.spamd_host_port = (None, None)
 
-    def dbg(self, level, msg):
+    def dbg(self, level: int, msg: str):
         if level > self.debug:
             return
         print(msg, file=sys.stderr)
 
-    def process_mbox(self, mbox, user, isspam):
+    def process_mbox(self, mbox: str, user: str, isspam: bool):
         self.dbg(
             1, 'processing %s folder %s for %s' % (
                 'spam' if isspam else 'ham',
@@ -311,12 +312,12 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.import_bdb_state:
-        import dbhash
+        import dbhash  # type: ignore
         state = dict(dbhash.open(args.import_bdb_state))
     elif args.init:
         state = {}
     else:
-        with open(args.statefile) as f:
+        with open(args.statefile, "rb") as f:
             state = pickle.load(f)
 
     (host, port) = parse_hostport(args.imap_server, default_port=143)
@@ -347,8 +348,18 @@ if __name__ == '__main__':
         r'\((.*)\) "(.*)" (.*)',
     )
     (r, data) = imap.list()
-    for l in data:
-        (flags, delim, folder) = list_response_pattern.match(l).groups()
+    for l_bytes in data:
+        assert isinstance(l_bytes, bytes)
+        l = l_bytes.decode()
+        scanner.dbg(3, 'parsing LIST line %s' % l)
+        match = list_response_pattern.match(l)
+        if not match:
+            print(
+                'Unable to parse IMAP LIST response line %s' % (l,),
+                file=sys.stderr,
+            )
+            exit(1)
+        (flags, delim, folder) = match.groups()
 
         parts = unquote(folder).split(delim)
 
@@ -368,5 +379,5 @@ if __name__ == '__main__':
             traceback.print_exc(e)
             break
 
-    with open(args.statefile, "w") as f:
-        pickle.dump(state, f)
+    with open(args.statefile, "wb") as wf:
+        pickle.dump(state, wf)
